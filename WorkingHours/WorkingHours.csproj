@@ -9,8 +9,6 @@
     <SelfContained>false</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <ApplicationIcon>WorkingHours.ico</ApplicationIcon>
-    <Company>MyCompany</Company>
-    <Authors>PW</Authors>
   </PropertyGroup>
 
   <ItemGroup>
