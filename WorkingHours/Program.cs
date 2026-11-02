@@ -10,14 +10,18 @@ namespace WorkingHours
     public class Program
     {
         #region Constants and Fields
-        private static readonly DateTime StartDate = new(2026, 7, 1);
+        private static readonly DateTime StartDate = new(2026, 11, 1);
         private static readonly int DailyTargetMinutes = 8 * 60;
         private static readonly int DailyBreakMinutes = 60;
+
+        private static readonly int DailyAdditionalWorkMinutes = 3;
 
         private const int EventWorkstationLocked = 4800;
         private const int EventWorkstationUnlocked = 4801;
 
         private static readonly string CurrentUser = Environment.UserName;
+        private static readonly string CurrentUserSid =
+            WindowsIdentity.GetCurrent().User?.Value ?? string.Empty;
         #endregion
 
         #region Data Structures
@@ -261,10 +265,7 @@ namespace WorkingHours
                             .ToDictionary(x => (string?)x.Attribute("Name") ?? "", x => x.Value);
 
 
-                        string username = eventData.GetValueOrDefault("SubjectUserName")
-                            ?? eventData.GetValueOrDefault("TargetUserName") ?? "";
-
-                        if (!username.Equals(CurrentUser, StringComparison.OrdinalIgnoreCase))
+                        if (!IsCurrentUserEvent(eventData))
                             continue;
 
                         bool isUnlocked = record.Id == EventWorkstationUnlocked;
@@ -279,6 +280,36 @@ namespace WorkingHours
             }
 
             return events.OrderBy(x => x.Timestamp).ToList();
+        }
+
+        /// <summary>
+        /// Determines whether an event belongs to the current Windows user.
+        /// </summary>
+        /// <param name="eventData">The event data fields.</param>
+        /// <returns><see langword="true"/> when the event belongs to the current user.</returns>
+        static bool IsCurrentUserEvent(Dictionary<string, string> eventData)
+        {
+            string eventUserSid = eventData.GetValueOrDefault("SubjectUserSid")
+                ?? eventData.GetValueOrDefault("TargetUserSid")
+                ?? string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(eventUserSid))
+            {
+                return eventUserSid.Equals(CurrentUserSid, StringComparison.OrdinalIgnoreCase);
+            }
+
+            string username = eventData.GetValueOrDefault("SubjectUserName")
+                ?? eventData.GetValueOrDefault("TargetUserName")
+                ?? string.Empty;
+            string domain = eventData.GetValueOrDefault("SubjectDomainName")
+                ?? eventData.GetValueOrDefault("TargetDomainName")
+                ?? string.Empty;
+            string qualifiedUsername = $"{domain}\\{username}";
+            string currentIdentityName = WindowsIdentity.GetCurrent().Name;
+
+            return username.Equals(CurrentUser, StringComparison.OrdinalIgnoreCase)
+                || qualifiedUsername.Equals(currentIdentityName, StringComparison.OrdinalIgnoreCase)
+                || username.Equals(currentIdentityName, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -327,7 +358,7 @@ namespace WorkingHours
         }
 
         /// <summary>
-        /// Splits work intervals across days and deducts the daily break time.
+        /// Calculates daily working time from the recorded work intervals and deducts the daily break time.
         /// </summary>
         /// <param name="intervals">The work intervals to process.</param>
         /// <param name="absences">The configured absence dates, types, and work locations.</param>
@@ -358,29 +389,13 @@ namespace WorkingHours
             {
                 DateTime date = interval.Start.Date;
 
-                while (date <= interval.End.Date)
+                if (IsWorkingDay(date)
+                    && dailyResults.TryGetValue(date, out DailyResult? result)
+                    && (!result.HasManualEntry || !string.IsNullOrWhiteSpace(result.WorkLocation))
+                    && interval.End > interval.Start)
                 {
-                    if (IsWorkingDay(date) && dailyResults.ContainsKey(date))
-                    {
-                        if (dailyResults[date].HasManualEntry
-                            && string.IsNullOrWhiteSpace(dailyResults[date].WorkLocation))
-                        {
-                            date = date.AddDays(1);
-                            continue;
-                        }
-
-                        DateTime start = interval.Start > date ? interval.Start : date;
-
-                        DateTime end = interval.End < date ? interval.End : date.AddDays(1);
-
-                        if (end > start)
-                        {
-                            int minutes = (int)Math.Round((end - start).TotalMinutes);
-                            dailyResults[date].PresenceMinutes += minutes;
-                        }
-                    }
-
-                    date = date.AddDays(1);
+                    int minutes = (int)Math.Round((interval.End - interval.Start).TotalMinutes);
+                    result.PresenceMinutes += minutes;
                 }
             }
 
